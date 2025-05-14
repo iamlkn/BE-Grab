@@ -80,8 +80,6 @@ jobs:
     name: Deploy to Google Cloud Run
     needs: build-lint-test # Run this job only after build-lint-test is successful
     runs-on: ubuntu-latest
-    # Only run deployment on push to the main branch
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     permissions:
       contents: 'read'
