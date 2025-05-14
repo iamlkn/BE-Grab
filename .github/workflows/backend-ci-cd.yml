@@ -78,12 +78,9 @@ jobs:
       #     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
   deploy-to-cloud-run:
-    needs: build-lint-test # Ensure tests pass before deploying
+    needs: build-lint-test
     runs-on: ubuntu-latest
-    # Only run on push to main branch
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-
-    # Add 'id-token' with 'write' permission for Workload Identity Federation
     permissions:
       contents: 'read'
       id-token: 'write'
@@ -96,14 +93,33 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-          # For Workload Identity Federation (more secure, preferred but more setup):
-          # workload_identity_provider: 'projects/${{ env.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/YOUR_POOL_ID/providers/YOUR_PROVIDER_ID'
-          # service_account: 'github-actions-deployer@${{ env.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      # Configure Docker to use gcloud credential helper
+      # Set up Python for migration step (NEEDS TO BE ADDED)
+      - name: Set up Python for migrations
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10.11' # Match your project's Python version
+          cache: 'pip' # Optional: cache pip dependencies
+          # If your alembic setup depends on your main requirements.txt, 
+          # you might want to specify the cache dependency path for that specific working directory too.
+          # cache-dependency-path: ${{ env.WORKING_DIRECTORY }}/requirements.txt
+
+      # Install Alembic and DB driver for migrations (NEEDS TO BE ADDED)
+      - name: Install Alembic and DB driver
+        working-directory: ${{ env.WORKING_DIRECTORY }} # Ensure this is where your requirements.txt for BE is
+        run: |
+          python -m pip install --upgrade pip
+          # Install specific packages needed for alembic to run
+          # psycopg2-binary for PostgreSQL, alembic itself.
+          # If your migrations/env.py imports models directly from your app,
+          # you might need to install your full requirements.txt
+          pip install alembic psycopg2-binary sqlalchemy
+          # Or, if your migrations/env.py is complex and imports many parts of your app:
+          # pip install -r requirements.txt
+
       - name: Configure Docker
         run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
 
@@ -115,19 +131,14 @@ jobs:
           echo "Building image: $IMAGE_NAME:$IMAGE_TAG from Dockerfile: ${{ env.DOCKERFILE_PATH }} with context: ${{ env.WORKING_DIRECTORY }}"
           docker build -t "$IMAGE_NAME:$IMAGE_TAG" -f ${{ env.DOCKERFILE_PATH }} ${{ env.WORKING_DIRECTORY }}
           docker push "$IMAGE_NAME:$IMAGE_TAG"
-          docker tag "$IMAGE_NAME:$IMAGE_TAG" "$IMAGE_NAME:latest" # Optionally tag as latest
+          docker tag "$IMAGE_NAME:$IMAGE_TAG" "$IMAGE_NAME:latest"
           docker push "$IMAGE_NAME:latest"
 
       - name: Deploy to Cloud Run
         env:
           IMAGE_TO_DEPLOY: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.IMAGE_REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
-          # Construct DATABASE_URL for Cloud Run environment
-          # Cloud Run will connect to Cloud SQL over private IP. The host is the private IP.
-          # We need to discover the private IP or use the instance connection name with the proxy.
-          # Cloud Run's --add-cloudsql-instances handles the proxy setup.
-          # So, the connection string for psycopg2 should use the socket path for the proxy.
-          # Format: postgresql+psycopg2://USER:PASSWORD@/DATABASE?host=/cloudsql/INSTANCE_CONNECTION_NAME
           PROD_DATABASE_URL: "postgresql+psycopg2://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@/${{ env.DB_NAME }}?host=/cloudsql/${{ env.CLOUD_SQL_CONNECTION_NAME }}"
+          GCS_BUCKET_NAME: ${{ secrets.GCS_BUCKET_NAME }} # <--- ADDED for GCS
         run: |
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image ${{ env.IMAGE_TO_DEPLOY }} \
@@ -139,62 +150,60 @@ jobs:
             --set-env-vars "DATABASE_URL=${PROD_DATABASE_URL}" \
             --set-env-vars "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" \
             --set-env-vars "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" \
+            --set-env-vars "GCS_BUCKET_NAME=${{ env.GCS_BUCKET_NAME }}" \ # <--- ADDED for GCS
             --project ${{ env.GCP_PROJECT_ID }} \
             --quiet
 
-      # Optional: Run Database Migrations after successful deployment
-      # This step is more complex as it needs to run commands against the deployed service
-      # or have a way to connect to Cloud SQL from the runner securely.
-      # One way is to invoke a command on the new Cloud Run revision, or use a Cloud Run Job.
-      # For simplicity here, we'll attempt to run alembic using gcloud exec if your app includes alembic CLI.
-      # A more robust way is to have a dedicated migration script or command in your Docker image.
-      # This example assumes your Docker image (and thus Cloud Run) has alembic and can run migrations.
-      # For this to work, the deployed Cloud Run service needs alembic and its configuration.
-      # The DATABASE_URL env var set above will be used by alembic.
-      # This step is EXPERIMENTAL for direct gcloud run exec. A Cloud Run Job is better.
-      #
-      # - name: Run Database Migrations on Cloud Run (Requires 'gcloud beta run services update --execute-command')
-      #   if: success() # Only run if deployment was successful
-      #   env:
-      #     # The DATABASE_URL is already set in the Cloud Run service environment
-      #     PROD_DATABASE_URL: "postgresql+psycopg2://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@/${{ env.DB_NAME }}?host=/cloudsql/${{ env.CLOUD_SQL_CONNECTION_NAME }}"
-      #   run: |
-      #     echo "Attempting to run migrations. This feature is evolving."
-      #     # Note: Cloud Run `execute-command` is for interactive shells.
-      #     # For migrations, a better approach is:
-      #     # 1. App runs migrations on startup (carefully, with leader election if multiple instances)
-      #     # 2. A separate Cloud Run Job for migrations.
-      #     # 3. A custom entrypoint in your Docker image that runs migrations then starts the app.
-      #     #
-      #     # If your Docker CMD is `gunicorn ...`, you can't just `alembic upgrade head`.
-      #     # You would need a separate entrypoint script or a different command.
-      #     # For now, let's assume you'll run migrations manually or via a Cloud Run Job.
-      #     echo "INFO: Manual migration or Cloud Run Job recommended for database migrations."
-      #     echo "Example: gcloud beta run jobs create migration-job --image ... --command alembic --args upgrade,head ..."
-      #     echo "Then: gcloud beta run jobs execute migration-job"
-      #
-      # Simpler approach for now: Run migrations from the CI runner using Cloud SQL Auth Proxy
-      # This requires Cloud SQL Auth Proxy to be installed on the runner.
       - name: Install Cloud SQL Auth Proxy
+        # This step downloads the proxy to the root of the runner's workspace for this job
         run: |
           wget https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.8.2/cloud-sql-proxy.linux.amd64 -O cloud-sql-proxy
           chmod +x cloud-sql-proxy
 
       - name: Run Database Migrations via Cloud SQL Proxy
-        working-directory: ${{ env.WORKING_DIRECTORY }} # Where alembic.ini is
+        working-directory: ${{ env.WORKING_DIRECTORY }} # alembic.ini should be here or in a subdir like 'migrations'
         env:
-          # This DATABASE_URL connects to the proxy, which then connects to Cloud SQL
           DATABASE_URL: "postgresql+psycopg2://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@127.0.0.1:5432/${{ env.DB_NAME }}"
-          # Other env vars needed by alembic's env.py if it loads full app config
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GCS_BUCKET_NAME: ${{ secrets.GCS_BUCKET_NAME }} # Ensure alembic env.py can access if needed
         run: |
-          ./cloud-sql-proxy --quiet --credentials-file "$GOOGLE_APPLICATION_CREDENTIALS" ${{ env.CLOUD_SQL_CONNECTION_NAME }} & # Run proxy in background
+          # The proxy was downloaded to the GITHUB_WORKSPACE root, so reference it from there
+          # Or, ensure the "Install Cloud SQL Auth Proxy" step has a working-directory set
+          # so that ./cloud-sql-proxy is relative to that.
+          # Easiest: use absolute path from GITHUB_WORKSPACE
+          ${{ github.workspace }}/cloud-sql-proxy --quiet --credentials-file "$GOOGLE_APPLICATION_CREDENTIALS" ${{ env.CLOUD_SQL_CONNECTION_NAME }} &
+          PROXY_PID=$! # Capture the PID of the background process
+          echo "Cloud SQL Proxy PID: $PROXY_PID"
           sleep 5 # Give proxy time to start
-          alembic upgrade head
-          # Kill the proxy, ensure it's killed even if alembic fails
-          PROXY_PID=$(pgrep cloud-sql-proxy)
-          if [ -n "$PROXY_PID" ]; then
-            kill $PROXY_PID
-            wait $PROXY_PID || true # Wait for it to exit, ignore error if already exited
+
+          # Check if proxy is running
+          if ! ps -p $PROXY_PID > /dev/null; then
+            echo "Cloud SQL Proxy failed to start or exited prematurely."
+            # You can try to get logs from proxy if it has an option, or check dmesg if possible
+            exit 1
           fi
+          
+          echo "Running Alembic migrations..."
+          alembic upgrade head
+
+          echo "Killing Cloud SQL Proxy (PID: $PROXY_PID)..."
+          kill $PROXY_PID
+          # Wait for the proxy to actually terminate. Add a timeout to prevent hanging.
+          # The 'timeout' command might not be available on all runners, 'wait' is more portable.
+          # If 'wait $PROXY_PID' hangs, the trap below will eventually kill it.
+          # Using a more robust kill and wait:
+          if ps -p $PROXY_PID > /dev/null; then # Check if still running before trying to kill
+             kill $PROXY_PID
+             for i in {1..5}; do # Wait up to 5 seconds
+                 if ! ps -p $PROXY_PID > /dev/null; then
+                     break
+                 fi
+                 sleep 1
+             done
+             if ps -p $PROXY_PID > /dev/null; then # If still running, force kill
+                 echo "Proxy did not terminate gracefully, force killing..."
+                 kill -9 $PROXY_PID
+             fi
+          fi
+          echo "Cloud SQL Proxy should be stopped."
