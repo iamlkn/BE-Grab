@@ -5,7 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'BE/**'
-      - '.github/workflows/**' # Trigger on workflow changes too
+      - '.github/workflows/backend-cicd.yml' # Trigger on workflow changes too
   pull_request:
     branches: [ main ]
     paths:
@@ -14,22 +14,23 @@ on:
 
 env:
   GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GCP_REGION: ${{ secrets.GCP_REGION }} # e.g., us-central1
-  CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+  GCP_REGION: ${{ secrets.GCP_REGION }}                # e.g., us-central1
+  CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }} # e.g., your-project:your-region:your-instance
   DB_USER: ${{ secrets.DB_USER }}
   DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
   DB_NAME: ${{ secrets.DB_NAME }}
-  SERVICE_NAME: my-backend-service # Choose a name for your Cloud Run service
-  IMAGE_REPO_NAME: my-backend-repo # Name of your Artifact Registry repo
-  DOCKERFILE_PATH: ./BE/Dockerfile # Path to your Dockerfile relative to repo root
-  WORKING_DIRECTORY: ./BE # Directory where your backend code and requirements.txt reside
+  SERVICE_NAME: my-backend-service          # <<< CHANGE THIS to your desired Cloud Run service name
+  IMAGE_REPO_NAME: my-backend-images        # <<< CHANGE THIS to your Artifact Registry repository name
+  PYTHON_VERSION: '3.10.11'                 # <<< CHANGE THIS to your Python version
+  DOCKERFILE_PATH: ./BE/Dockerfile
+  WORKING_DIRECTORY: ./BE
 
 jobs:
   build-lint-test:
+    name: Build, Lint, and Test
     runs-on: ubuntu-latest
-    # This job will use a service container for DB for tests, not Cloud SQL
     services:
-      postgres_test: # Renamed to avoid confusion with prod
+      postgres_test:
         image: postgres:15
         env:
           POSTGRES_USER: testuser
@@ -38,10 +39,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
 
     steps:
       - name: Checkout code
@@ -50,15 +48,15 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10.11'
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
           cache-dependency-path: ${{ env.WORKING_DIRECTORY }}/requirements.txt
 
-      - name: Install dependencies
+      - name: Install Python dependencies for test/lint
         working-directory: ${{ env.WORKING_DIRECTORY }}
         run: |
           python -m pip install --upgrade pip
-          pip install flake8 pytest psycopg2-binary alembic # Ensure test/migration tools are here
+          pip install flake8 pytest psycopg2-binary alembic sqlalchemy
           pip install -r requirements.txt
 
       - name: Lint with flake8
@@ -68,66 +66,73 @@ jobs:
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
       # - name: Test with pytest
+      #   # if: false # Uncomment or remove this line if you have tests
       #   working-directory: ${{ env.WORKING_DIRECTORY }}
       #   run: |
-      #     pytest tests/ # Assuming tests are in BE/tests/
+      #     pytest tests/ # Adjust path to your tests if different
       #   env:
-      #     DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/testdb # Connect to service DB
-      #     # Pass other necessary secrets for tests
+      #     DATABASE_URL: postgresql+psycopg2://testuser:testpassword@localhost:5432/testdb
+      #     # Pass any other secrets needed by your tests from GitHub Secrets
       #     GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       #     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
   deploy-to-cloud-run:
-    needs: build-lint-test # Ensure tests pass before deploying
+    name: Deploy to Google Cloud Run
+    needs: build-lint-test # Run this job only after build-lint-test is successful
     runs-on: ubuntu-latest
-    # Only run on push to main branch
+    # Only run deployment on push to the main branch
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
-    # Add 'id-token' with 'write' permission for Workload Identity Federation
     permissions:
       contents: 'read'
-      id-token: 'write'
+      id-token: 'write' # Required for Workload Identity Federation (preferred) or SA key auth
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Setup Python for this job's steps (e.g., running alembic locally on runner)
+      - name: Set up Python for deployment job
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: ${{ env.WORKING_DIRECTORY }}/requirements.txt # Cache based on main requirements
+
       - name: Authenticate to Google Cloud
+        id: auth
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
-          # For Workload Identity Federation (more secure, preferred but more setup):
+          # For Workload Identity Federation (more secure, but more GCP setup):
           # workload_identity_provider: 'projects/${{ env.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/YOUR_POOL_ID/providers/YOUR_PROVIDER_ID'
-          # service_account: 'github-actions-deployer@${{ env.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
+          # service_account: 'your-sa-name@${{ env.GCP_PROJECT_ID }}.iam.gserviceaccount.com'
 
-      - name: Set up Cloud SDK
+      - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
 
-      # Configure Docker to use gcloud credential helper
-      - name: Configure Docker
+      - name: Configure Docker to use gcloud credential helper
         run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
 
       - name: Build and Push Docker image to Artifact Registry
         env:
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: ${{ github.sha }} # Use Git SHA for unique image tagging
           IMAGE_NAME: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.IMAGE_REPO_NAME }}/${{ env.SERVICE_NAME }}
         run: |
           echo "Building image: $IMAGE_NAME:$IMAGE_TAG from Dockerfile: ${{ env.DOCKERFILE_PATH }} with context: ${{ env.WORKING_DIRECTORY }}"
           docker build -t "$IMAGE_NAME:$IMAGE_TAG" -f ${{ env.DOCKERFILE_PATH }} ${{ env.WORKING_DIRECTORY }}
           docker push "$IMAGE_NAME:$IMAGE_TAG"
-          docker tag "$IMAGE_NAME:$IMAGE_TAG" "$IMAGE_NAME:latest" # Optionally tag as latest
+          docker tag "$IMAGE_NAME:$IMAGE_TAG" "$IMAGE_NAME:latest" # Optionally, tag the same image as 'latest'
           docker push "$IMAGE_NAME:latest"
 
       - name: Deploy to Cloud Run
         env:
+          # This DATABASE_URL is for the application running in Cloud Run.
+          # It uses the special /cloudsql/ socket path for the proxy.
+          APPLICATION_DATABASE_URL_FOR_CLOUD_RUN: "postgresql+psycopg2://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@/${{ env.DB_NAME }}?host=/cloudsql/${{ env.CLOUD_SQL_CONNECTION_NAME }}"
           IMAGE_TO_DEPLOY: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.IMAGE_REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
-          # Construct DATABASE_URL for Cloud Run environment
-          # Cloud Run will connect to Cloud SQL over private IP. The host is the private IP.
-          # We need to discover the private IP or use the instance connection name with the proxy.
-          # Cloud Run's --add-cloudsql-instances handles the proxy setup.
-          # So, the connection string for psycopg2 should use the socket path for the proxy.
-          # Format: postgresql+psycopg2://USER:PASSWORD@/DATABASE?host=/cloudsql/INSTANCE_CONNECTION_NAME
-          PROD_DATABASE_URL: "postgresql+psycopg2://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@/${{ env.DB_NAME }}?host=/cloudsql/${{ env.CLOUD_SQL_CONNECTION_NAME }}"
         run: |
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image ${{ env.IMAGE_TO_DEPLOY }} \
@@ -136,65 +141,69 @@ jobs:
             --allow-unauthenticated \
             --port 8080 \
             --add-cloudsql-instances ${{ env.CLOUD_SQL_CONNECTION_NAME }} \
-            --set-env-vars "DATABASE_URL=${PROD_DATABASE_URL}" \
+            # Ensure your app's config.py prioritizes reading DATABASE_URL
+            --set-env-vars "DATABASE_URL=${APPLICATION_DATABASE_URL_FOR_CLOUD_RUN}" \
+            # Set individual components too, in case your app's config.py uses them as fallbacks
+            # or for other purposes, though DATABASE_URL should take precedence for the DB connection.
+            --set-env-vars "DB_USER=${{ env.DB_USER }}" \
+            --set-env-vars "DB_PASSWORD=${{ env.DB_PASSWORD }}" \
+            --set-env-vars "DB_NAME=${{ env.DB_NAME }}" \
+            --set-env-vars "CLOUD_SQL_CONNECTION_NAME=${{ env.CLOUD_SQL_CONNECTION_NAME }}" \
             --set-env-vars "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" \
             --set-env-vars "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" \
             --project ${{ env.GCP_PROJECT_ID }} \
-            --quiet
+            --quiet # Suppress interactive prompts
 
-      # Optional: Run Database Migrations after successful deployment
-      # This step is more complex as it needs to run commands against the deployed service
-      # or have a way to connect to Cloud SQL from the runner securely.
-      # One way is to invoke a command on the new Cloud Run revision, or use a Cloud Run Job.
-      # For simplicity here, we'll attempt to run alembic using gcloud exec if your app includes alembic CLI.
-      # A more robust way is to have a dedicated migration script or command in your Docker image.
-      # This example assumes your Docker image (and thus Cloud Run) has alembic and can run migrations.
-      # For this to work, the deployed Cloud Run service needs alembic and its configuration.
-      # The DATABASE_URL env var set above will be used by alembic.
-      # This step is EXPERIMENTAL for direct gcloud run exec. A Cloud Run Job is better.
-      #
-      # - name: Run Database Migrations on Cloud Run (Requires 'gcloud beta run services update --execute-command')
-      #   if: success() # Only run if deployment was successful
-      #   env:
-      #     # The DATABASE_URL is already set in the Cloud Run service environment
-      #     PROD_DATABASE_URL: "postgresql+psycopg2://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@/${{ env.DB_NAME }}?host=/cloudsql/${{ env.CLOUD_SQL_CONNECTION_NAME }}"
-      #   run: |
-      #     echo "Attempting to run migrations. This feature is evolving."
-      #     # Note: Cloud Run `execute-command` is for interactive shells.
-      #     # For migrations, a better approach is:
-      #     # 1. App runs migrations on startup (carefully, with leader election if multiple instances)
-      #     # 2. A separate Cloud Run Job for migrations.
-      #     # 3. A custom entrypoint in your Docker image that runs migrations then starts the app.
-      #     #
-      #     # If your Docker CMD is `gunicorn ...`, you can't just `alembic upgrade head`.
-      #     # You would need a separate entrypoint script or a different command.
-      #     # For now, let's assume you'll run migrations manually or via a Cloud Run Job.
-      #     echo "INFO: Manual migration or Cloud Run Job recommended for database migrations."
-      #     echo "Example: gcloud beta run jobs create migration-job --image ... --command alembic --args upgrade,head ..."
-      #     echo "Then: gcloud beta run jobs execute migration-job"
-      #
-      # Simpler approach for now: Run migrations from the CI runner using Cloud SQL Auth Proxy
-      # This requires Cloud SQL Auth Proxy to be installed on the runner.
-      - name: Install Cloud SQL Auth Proxy
+      # --- Database Migration Steps ---
+      - name: Install Cloud SQL Auth Proxy on runner
         run: |
           wget https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.8.2/cloud-sql-proxy.linux.amd64 -O cloud-sql-proxy
           chmod +x cloud-sql-proxy
 
-      - name: Run Database Migrations via Cloud SQL Proxy
-        working-directory: ${{ env.WORKING_DIRECTORY }} # Where alembic.ini is
+      - name: Install Python dependencies for migrations on runner
+        working-directory: ${{ env.WORKING_DIRECTORY }} # So it can find requirements.txt if needed
+        run: |
+          python -m pip install --upgrade pip
+          # Install Alembic and its core dependencies.
+          # Your app.core.config and app.db.session might import other things from your main requirements.
+          # So, installing all requirements is often safer here to ensure Alembic's env.py can import everything.
+          pip install -r requirements.txt
+          # Or, if requirements.txt is too heavy, be very specific:
+          # pip install alembic psycopg2-binary sqlalchemy # and any other direct imports for config/session
+
+      - name: Run Database Migrations with Alembic
+        working-directory: ${{ env.WORKING_DIRECTORY }} # This is BE/, where alembic.ini is
         env:
-          # This DATABASE_URL connects to the proxy, which then connects to Cloud SQL
+          # This DATABASE_URL is for Alembic running on the CI runner.
+          # It connects to the Cloud SQL Auth Proxy listening on 127.0.0.1:5432.
+          # Your app.core.config.py (via app.db.session.engine) MUST use this.
           DATABASE_URL: "postgresql+psycopg2://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@127.0.0.1:5432/${{ env.DB_NAME }}"
-          # Other env vars needed by alembic's env.py if it loads full app config
+          # Set individual components too, in case your app's config.py has complex logic,
+          # though DATABASE_URL should take precedence if your config checks for it first.
+          DB_USER: ${{ env.DB_USER }}
+          DB_PASSWORD: ${{ env.DB_PASSWORD }}
+          DB_NAME: ${{ env.DB_NAME }}
+          DB_HOST: "127.0.0.1" # Tells config logic to use TCP to the proxy
+          DB_PORT: "5432"
+          # CLOUD_SQL_CONNECTION_NAME: ${{ env.CLOUD_SQL_CONNECTION_NAME }} # Not usually needed when DB_HOST is 127.0.0.1
+          # Other env vars potentially needed by your migrations/env.py if it loads full app config
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # GOOGLE_APPLICATION_CREDENTIALS is automatically set by the 'google-github-actions/auth' step
         run: |
-          ./cloud-sql-proxy --quiet --credentials-file "$GOOGLE_APPLICATION_CREDENTIALS" ${{ env.CLOUD_SQL_CONNECTION_NAME }} & # Run proxy in background
-          sleep 5 # Give proxy time to start
+          echo "Starting Cloud SQL Auth Proxy..."
+          # Path to proxy is one level up from BE/ working directory
+          ../cloud-sql-proxy --quiet ${{ env.CLOUD_SQL_CONNECTION_NAME }} &
+          PROXY_PID=$! # Capture PID of the proxy
+          sleep 5 # Give proxy a few seconds to establish connection
+
+          echo "Running Alembic migrations..."
+          # Alembic command will use the Python environment set up by 'setup-python'
+          # and packages installed in 'Install Python dependencies for migrations on runner'
           alembic upgrade head
-          # Kill the proxy, ensure it's killed even if alembic fails
-          PROXY_PID=$(pgrep cloud-sql-proxy)
-          if [ -n "$PROXY_PID" ]; then
-            kill $PROXY_PID
-            wait $PROXY_PID || true # Wait for it to exit, ignore error if already exited
-          fi
+
+          # Stop Cloud SQL Proxy
+          echo "Stopping Cloud SQL Auth Proxy..."
+          kill $PROXY_PID
+          wait $PROXY_PID || true # Wait for it to exit, ignore error if already exited
+          echo "Migrations finished."
