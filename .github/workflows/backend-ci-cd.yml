@@ -138,7 +138,7 @@ jobs:
         env:
           IMAGE_TO_DEPLOY: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.IMAGE_REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
           PROD_DATABASE_URL: "postgresql+psycopg2://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@/${{ env.DB_NAME }}?host=/cloudsql/${{ env.CLOUD_SQL_CONNECTION_NAME }}"
-          GCS_BUCKET_NAME: ${{ secrets.GCS_BUCKET_NAME }} # <--- ADDED for GCS
+          #GCS_BUCKET_NAME: ${{ secrets.GCS_BUCKET_NAME }} # <--- ADDED for GCS
         run: |
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image ${{ env.IMAGE_TO_DEPLOY }} \
@@ -150,7 +150,6 @@ jobs:
             --set-env-vars "DATABASE_URL=${PROD_DATABASE_URL}" \
             --set-env-vars "GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}" \
             --set-env-vars "OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}" \
-            --set-env-vars "GCS_BUCKET_NAME=${{ env.GCS_BUCKET_NAME }}" \ # <--- ADDED for GCS
             --project ${{ env.GCP_PROJECT_ID }} \
             --quiet
 
@@ -166,7 +165,7 @@ jobs:
           DATABASE_URL: "postgresql+psycopg2://${{ env.DB_USER }}:${{ env.DB_PASSWORD }}@127.0.0.1:5432/${{ env.DB_NAME }}"
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GCS_BUCKET_NAME: ${{ secrets.GCS_BUCKET_NAME }} # Ensure alembic env.py can access if needed
+          #GCS_BUCKET_NAME: ${{ secrets.GCS_BUCKET_NAME }} # Ensure alembic env.py can access if needed
         run: |
           # The proxy was downloaded to the GITHUB_WORKSPACE root, so reference it from there
           # Or, ensure the "Install Cloud SQL Auth Proxy" step has a working-directory set
