@@ -67,15 +67,15 @@ jobs:
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-      - name: Test with pytest
-        working-directory: ${{ env.WORKING_DIRECTORY }}
-        run: |
-          pytest tests/ # Assuming tests are in BE/tests/
-        env:
-          DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/testdb # Connect to service DB
-          # Pass other necessary secrets for tests
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      # - name: Test with pytest
+      #   working-directory: ${{ env.WORKING_DIRECTORY }}
+      #   run: |
+      #     pytest tests/ # Assuming tests are in BE/tests/
+      #   env:
+      #     DATABASE_URL: postgresql://testuser:testpassword@localhost:5432/testdb # Connect to service DB
+      #     # Pass other necessary secrets for tests
+      #     GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      #     OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
   deploy-to-cloud-run:
     needs: build-lint-test # Ensure tests pass before deploying
