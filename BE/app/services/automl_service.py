@@ -36,7 +36,7 @@ except ImportError as e:
     DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), '../automl/config.yaml')
 
 # Core Config Import
-from app.core.config import settings
+from app.core import config as settings
 import numpy as np
 
 def convert_numpy_types(obj):

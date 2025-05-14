@@ -4,7 +4,7 @@ from openai import OpenAI
 import base64
 from typing import Any, Dict, List, Union, Optional
 
-from app.core.config import settings
+from app.core import config as settings
 
 # --- Helper function to encode image (Identical to original) ---
 def encode_image_to_base64(image_path: str) -> Optional[str]:

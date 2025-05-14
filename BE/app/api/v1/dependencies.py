@@ -1,7 +1,7 @@
 from typing import Generator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from app.core.config import settings
+from app.core import config as settings
 from app.db.session import SessionLocal
 
 def get_db() -> Generator[Session, None, None]:

@@ -1,0 +1,16 @@
+# .gcloudignore
+.git
+.gitignore
+.github/
+README.md
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.env
+local_dev_data/
+tests/ # If you don't run tests in the Docker image itself for deployment
+# Add other files/directories not needed for the final container
