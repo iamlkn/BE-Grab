@@ -1,0 +1,91 @@
+# ============================================================
+# Merged AutoML Runner Configuration
+# ============================================================
+
+# --- Core Paths & Identifiers ---
+data_file_path: 'school.csv'           # *** CHANGE TO YOUR ACTUAL DATA PATH ***
+target_column: 'Dropped_out'         # *** CHANGE TO YOUR ACTUAL TARGET COLUMN ***
+feature_columns: ['FeatureA', 'FeatureB', 'FeatureC'] # Optional: List of specific features. If null, use all except target.
+
+session_id: 123                      # Determines the output sub-folder name (e.g., automl_outputs/automl_123)
+experiment_name: 'automl_bigdata_exp'  # MLflow Experiment Name
+output_base_dir: '../FE/automation-data-analysts/public/automl_outputs'    # BASE directory where session folders will be created
+mlflow_tracking_uri: "sqlite:///mlflow_bigdata.db" # MLflow backend (local file or server URI like http://...)
+
+# --- Task Detection ---
+# How many unique values an integer column can have before being treated as regression
+unique_value_threshold_for_classification: 10
+
+# --- Data Loading & Pre-Setup ---
+optimize_pandas_dtypes: True      # Optimize DataFrame memory usage on load?
+run_data_profiling: false         # Generate ydata-profiling report in Step 1? (Requires ydata-profiling)
+profile_report_name: "data_profile_report.html" # Filename if run_data_profiling is true
+
+# --- Performance Optimization Settings ---
+use_sampling_in_setup: True       # Apply sampling BEFORE PyCaret setup? Useful for very large data.
+sample_fraction: 1.0            # Fraction of data to use if sampling (e.g., 0.1 for 10%). Value 1.0 means use all data, effectively disabling sampling even if use_sampling_in_setup is True.
+#sample_n: 50000                 # Number of rows to sample (alternative to fraction, overrides it if set)
+n_jobs: -1                        # Number of CPU cores to use (-1 uses all available)
+
+# --- PyCaret Setup Parameters ---
+# Basic imputation and folding strategies
+numeric_imputation: 'mean'
+categorical_imputation: 'mode'
+fold_strategy: 'stratifiedkfold'    # CV strategy ('kfold', 'stratifiedkfold', 'groupkfold', time series splits, etc.)
+baseline_folds: 3                 # Number of folds for CV in compare_models and baseline analysis
+tuning_folds: 3                   # Number of folds for CV in tune_model
+
+# Advanced setup params (passed directly to pycaret.setup function)
+# Add any other valid pycaret.setup arguments here.
+# Example: enable feature engineering, outlier removal etc.
+setup_params_extra:
+  normalize: false # Explicitly set normalize behavior if needed (code defaults based on task type if not set)
+  # feature_interaction: false
+  # polynomial_features: false
+  # remove_outliers: false
+  # feature_selection: false
+  # verbose: false # Set verbose level for pycaret setup output
+
+# --- PyCaret Model Selection/Tuning Params ---
+# Filter models during compare_models step
+include_models_compare: ['lr', 'ridge', 'lightgbm', 'rf', 'et'] # Optional: List of model IDs to include
+exclude_models_compare: null # Optional: List of model IDs to exclude (e.g., ['svm', 'knn'])
+
+# Baseline models to analyze separately in Step 1
+# These should generally be fast models for a quick performance check
+baseline_classification_models: ['lr', 'ridge', 'lightgbm', 'rf', 'et']
+baseline_regression_models: ['lr', 'ridge', 'lightgbm', 'rf', 'et']
+save_baseline_models: false        # Save baseline model artifacts locally and log to MLflow?
+
+# Metrics for sorting and optimization
+sort_metric_classification: 'AUC'
+optimize_metric_classification: 'AUC'
+sort_metric_regression: 'RMSE'     # Lower is better for RMSE
+optimize_metric_regression: 'RMSE' # Lower is better for RMSE
+
+# Hyperparameter Tuning Settings
+model_to_tune_in_step2: null       # Optional: Specify model ID (e.g., 'lightgbm'). If null, Step 2 tunes the best model from compare_models.
+tuning_search_library: 'scikit-learn' # Library for hyperparameter search ('scikit-learn', 'optuna', 'scikit-optimize', 'tune-sklearn')
+tuning_search_algorithm: 'random'  # Search algorithm ('random', 'grid', 'bayesian' (depends on library))
+tuning_iterations: 15            # Number of iterations for random/bayesian search
+# custom_grid: {}                  # Optional: Define a custom hyperparameter grid per model
+#   lightgbm:
+#     learning_rate: [0.01, 0.05, 0.1]
+#     n_estimators: [100, 200, 300]
+analyze_tuned_step2: true          # Run analysis plots (feature importance, etc.) on the tuned model in Step 2?
+shap_enabled_if_possible: false     # Attempt SHAP summary plot in analysis steps if model supported by PyCaret? (Requires shap)
+
+# --- Finalization & Registry ---
+generate_model_card: false         # Generate a basic markdown model card in Step 3?
+register_model_in_mlflow: false    # Register the final model in MLflow Model Registry in Step 3?
+mlflow_registered_model_name: "AutoML_BigData_Model" # Name for the model in the registry (if registered)
+mlflow_model_stage: "Staging"      # Initial stage in registry ('Staging', 'Production', 'Archived') (if registered)
+
+# --- Prediction Settings ---
+enable_drift_check_on_predict: true # Run Evidently data drift check before prediction? (Requires evidently)
+halt_prediction_on_drift: false    # If true, stop predict_on_new_data if drift is detected
+drift_report_name: "prediction_drift_report.html" # Filename for drift report (if enabled)
+enable_prediction_explanation: false # Enable the explain_prediction method using SHAP? (Requires shap)
+prediction_target_column_name: 'prediction_label' # Name for the prediction column in output DataFrame
+prediction_score_column_name: 'prediction_score' # Name for the probability/score column (classification)
+use_gpu: true
